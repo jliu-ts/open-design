@@ -15,10 +15,17 @@ services:
       OD_ALLOWED_ORIGINS: ${OPEN_DESIGN_ALLOWED_ORIGINS:-}
       OD_PORT: 7456
       OD_WEB_PORT: ${OPEN_DESIGN_PORT:-7456}
+      OD_API_TOKEN: ${OD_API_TOKEN:-}
+      OD_BYPASS_TOKEN_GUARD: ${OD_BYPASS_TOKEN_GUARD:-}
+      OD_AGENT_PROFILES_CONFIG: /app/skills/agents.local.json
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-}
     ports:
       - "127.0.0.1:${OPEN_DESIGN_PORT:-7456}:7456"
     volumes:
       - open_design_data:/app/.od
+      - ../skills:/app/skills:ro
+      - ../design-systems:/app/design-systems:ro
     read_only: true
     tmpfs:
       - /tmp

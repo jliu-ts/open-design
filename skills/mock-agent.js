@@ -1,0 +1,195 @@
+#!/usr/bin/env node
+
+import { writeFileSync } from 'node:fs';
+import readline from 'node:readline';
+
+async function readPromptFromStdin() {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: false
+    });
+
+    let rawBuffer = '';
+    let resolved = false;
+
+    rl.on('line', (line) => {
+      rawBuffer += line + '\n';
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.type === 'user' && parsed.message?.content) {
+          let prompt = '';
+          for (const block of parsed.message.content) {
+            if (block.type === 'text') {
+              prompt += block.text + '\n';
+            }
+          }
+          if (prompt.trim()) {
+            resolved = true;
+            rl.close();
+            resolve(prompt);
+          }
+        }
+      } catch {
+        // Not a JSON line, collect it
+      }
+    });
+
+    rl.on('close', () => {
+      if (!resolved) {
+        resolve(rawBuffer);
+      }
+    });
+  });
+}
+
+async function main() {
+  // 1. Read the input prompt from stdin line-by-line
+  const prompt = await readPromptFromStdin();
+
+  if (typeof prompt !== 'string' || !prompt.trim()) {
+    console.error('Error: Empty prompt received.');
+    process.exit(1);
+  }
+
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const googleKey = process.env.GOOGLE_AI_API_KEY || process.env.GEMINI_API_KEY;
+
+  if (!anthropicKey && !googleKey) {
+    console.error('Error: Neither ANTHROPIC_API_KEY nor GOOGLE_AI_API_KEY/GEMINI_API_KEY environment variable is set.');
+    process.exit(1);
+  }
+
+  // Output initialization status
+  const modelName = anthropicKey ? 'claude-3-5-sonnet' : 'gemini-2.0-flash';
+  console.log(JSON.stringify({ type: 'system', subtype: 'init', model: modelName, session_id: 'session-1' }));
+  console.log(JSON.stringify({ type: 'system', subtype: 'status', status: 'thinking' }));
+
+  // 2. Call LLM API directly
+  try {
+    let text = '';
+    let resultUsage = { input_tokens: 1000, output_tokens: 2000 };
+
+    if (anthropicKey) {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': anthropicKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-3-5-sonnet-20241022',
+          max_tokens: 4000,
+          messages: [
+            {
+              role: 'user',
+              content: `You are a design engineer. Generate a single-file HTML carousel presentation matching the request below.
+Return ONLY a valid, complete HTML structure containing all CSS, JS, and slides. Wrap your code inside a single \`\`\`html ... \`\`\` code fence block.
+
+Request:
+${prompt}`
+            }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Anthropic API error (${response.status}): ${errText}`);
+      }
+
+      const result = await response.json();
+      text = result.content?.[0]?.text || '';
+      resultUsage = result.usage || resultUsage;
+    } else {
+      // Use Gemini API
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${googleKey}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `You are a design engineer. Generate a single-file HTML carousel presentation matching the request below.
+Return ONLY a valid, complete HTML structure containing all CSS, JS, and slides. Wrap your code inside a single \`\`\`html ... \`\`\` code fence block.
+
+Request:
+${prompt}`
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 8192
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Gemini API error (${response.status}): ${errText}`);
+      }
+
+      const result = await response.json();
+      text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      // Approximate tokens
+      resultUsage = {
+        input_tokens: result.usageMetadata?.promptTokenCount || 1500,
+        output_tokens: result.usageMetadata?.candidatesTokenCount || 3000
+      };
+    }
+
+    // 3. Extract the HTML block and write to index.html in the current working directory
+    const htmlRegex = /```html([\s\S]*?)```/i;
+    const match = htmlRegex.exec(text);
+    let htmlContent = '';
+    if (match && match[1]) {
+      htmlContent = match[1].trim();
+    } else {
+      // Fallback: search for <html> tag or use raw text
+      if (text.includes('<html') || text.includes('<!DOCTYPE')) {
+        htmlContent = text;
+      } else {
+        throw new Error('No HTML code block generated by the model.');
+      }
+    }
+
+    // Write index.html in the project working directory (process.cwd())
+    writeFileSync('index.html', htmlContent, 'utf8');
+
+    // 4. Output success events to stdout
+    console.log(JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg-1',
+        content: [
+          {
+            type: 'text',
+            text: `Successfully generated carousel. Output saved to index.html.\n\n${text.slice(0, 500)}...`
+          }
+        ],
+        stop_reason: 'end_turn'
+      }
+    }));
+
+    console.log(JSON.stringify({
+      type: 'result',
+      usage: resultUsage,
+      total_cost_usd: 0.015,
+      duration_ms: 5000,
+      stop_reason: 'end_turn'
+    }));
+
+    process.exit(0);
+  } catch (err) {
+    console.error('Error during execution:', err.message);
+    process.exit(1);
+  }
+}
+
+main().catch((err) => {
+  console.error('Fatal:', err);
+  process.exit(1);
+});

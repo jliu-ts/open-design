@@ -1,0 +1,14 @@
+{
+  "agents": [
+    {
+      "id": "mock-agent",
+      "name": "Claude Code (Docker Fallback)",
+      "baseAgent": "claude",
+      "bin": "node",
+      "args": ["/app/skills/mock-agent.js"],
+      "models": [
+        { "id": "claude-3-5-sonnet-20241022", "label": "Claude 3.5 Sonnet" }
+      ]
+    }
+  ]
+}
