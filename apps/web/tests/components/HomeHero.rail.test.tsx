@@ -118,6 +118,20 @@ describe('HomeHero intent rail', () => {
     }
   });
 
+  it('renders execution switcher inside the input footer when provided', () => {
+    renderHero({
+      executionSwitcher: (
+        <button type="button" data-testid="home-execution-switcher">
+          Local CLI
+        </button>
+      ),
+    });
+
+    const switcher = screen.getByTestId('home-execution-switcher');
+    const footer = switcher.closest('.home-hero__input-foot');
+    expect(footer).toBeTruthy();
+  });
+
   it('forwards the matching chip descriptor when clicked', () => {
     const { onPickChip } = renderHero();
     fireEvent.click(screen.getByTestId('home-hero-rail-image'));
@@ -183,8 +197,9 @@ describe('HomeHero intent rail', () => {
     expect(onPromptChange).toHaveBeenCalledWith(
       'Research the market opportunity for a product launch, including competitors, target users, pricing hypotheses, and launch narrative',
     );
-    expect(screen.getByTestId('home-hero-active-example').textContent).toContain('Example prompts: Research the market opportunity');
-    expect(screen.getByTestId('home-hero-active-example').textContent).toContain('...');
+    // The top "selected example" pill was removed from the composer; picking an
+    // example still seeds the prompt but no longer surfaces a dismissible chip.
+    expect(screen.queryByTestId('home-hero-active-example')).toBeNull();
   });
 
   it('shows matching plugin presets in the example prompt area for the selected tab', () => {
@@ -197,8 +212,9 @@ describe('HomeHero intent rail', () => {
 
     const presets = screen.getAllByTestId('home-hero-plugin-preset');
     expect(presets).toHaveLength(1);
+    // The preset card is now a thumbnail + name only; the prompt blurb was
+    // dropped from the card face but is still passed through on click below.
     expect(presets[0]?.textContent).toContain('Investor deck');
-    expect(presets[0]?.textContent).toContain('a focused brief');
 
     fireEvent.click(presets[0]!);
     expect(onPickExamplePlugin).toHaveBeenCalledWith(
@@ -206,7 +222,6 @@ describe('HomeHero intent rail', () => {
       'deck',
       'Create with a focused brief using Investor deck',
     );
-    expect(screen.getByTestId('home-hero-active-example').textContent).toContain('Example prompts: Investor deck');
   });
 
   it('orders curated example presets first for the selected artifact type', () => {

@@ -12,6 +12,7 @@ import {
   DesignSystemCreationFlow,
   DesignSystemDetailView,
 } from '../../src/components/DesignSystemFlow';
+import { CONNECTORS_CHANGED_EVENT } from '../../src/components/connectors-events';
 import type { AppConfig, Conversation, DesignSystemDetail, Project, ProjectFile } from '../../src/types';
 import { I18nProvider } from '../../src/i18n';
 
@@ -887,6 +888,7 @@ describe('DesignSystemCreationFlow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Browse folder' }));
 
     await waitFor(() => expect(screen.getByText('/Users/qingyu/work/comfyui')).toBeTruthy());
+    expect(screen.queryByTestId('ds-source-upload-loading')).toBeNull();
 
     continueToGeneration();
     continueToGeneration();
@@ -972,6 +974,7 @@ describe('DesignSystemCreationFlow', () => {
     });
     fireEvent.change(localCodeInput!, { target: { files: [tokenFile] } });
     expect(screen.getByText('1 local code files selected')).toBeTruthy();
+    expect(screen.queryByTestId('ds-source-upload-loading')).toBeNull();
 
     continueToGeneration();
     continueToGeneration();
@@ -995,6 +998,89 @@ describe('DesignSystemCreationFlow', () => {
     );
     expect(window.sessionStorage.getItem(`od:auto-send-first:${project.id}`)).toBe('1');
     expect(onCreated).toHaveBeenCalledWith(project.id, project);
+  });
+
+  it('shows global loading as soon as a large file-picker selection returns', async () => {
+    const { container } = render(
+      <DesignSystemCreationFlow
+        onBack={() => {}}
+        onCreated={() => {}}
+      />,
+    );
+    const localCodeInput = container.querySelector('input[webkitdirectory]') as HTMLInputElement | null;
+    const tokenFiles = Array.from({ length: 25 }, (_, index) => {
+      const file = new File([`:root { --brand-${index}: #d86a4a; }`], `tokens-${index}.css`, {
+        type: 'text/css',
+      });
+      Object.defineProperty(file, 'webkitRelativePath', { value: `comfyui/src/tokens-${index}.css` });
+      return file;
+    });
+
+    fireEvent.change(localCodeInput!, { target: { files: tokenFiles } });
+
+    expect(screen.getByTestId('ds-source-upload-loading').textContent).toContain('Adding source material...');
+    expect(screen.queryByText('25 local code files selected')).toBeNull();
+    await waitFor(() => expect(screen.getByText('25 local code files selected')).toBeTruthy(), { timeout: 2000 });
+    await waitFor(() => expect(screen.queryByTestId('ds-source-upload-loading')).toBeNull(), { timeout: 2500 });
+  });
+
+  it('shows global loading when the folder picker returns before files are enumerated', async () => {
+    const { container } = render(
+      <DesignSystemCreationFlow
+        onBack={() => {}}
+        onCreated={() => {}}
+      />,
+    );
+    const localCodeInput = container.querySelector('input[webkitdirectory]') as HTMLInputElement | null;
+    const tokenFiles = Array.from({ length: 25 }, (_, index) => {
+      const file = new File([`:root { --brand-${index}: #d86a4a; }`], `tokens-${index}.css`, {
+        type: 'text/css',
+      });
+      Object.defineProperty(file, 'webkitRelativePath', { value: `comfyui/src/tokens-${index}.css` });
+      return file;
+    });
+
+    fireEvent.click(localCodeInput!);
+    await new Promise((resolve) => window.setTimeout(resolve, 150));
+    fireEvent(window, new Event('focus'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ds-source-upload-loading').textContent).toContain('Adding source material...');
+    });
+    expect(screen.queryByText('25 local code files selected')).toBeNull();
+
+    fireEvent.change(localCodeInput!, { target: { files: tokenFiles } });
+
+    await waitFor(() => expect(screen.getByText('25 local code files selected')).toBeTruthy(), { timeout: 2000 });
+    await waitFor(() => expect(screen.queryByTestId('ds-source-upload-loading')).toBeNull(), { timeout: 2500 });
+  });
+
+  it('primes global loading while the folder picker is still open', async () => {
+    const { container } = render(
+      <DesignSystemCreationFlow
+        onBack={() => {}}
+        onCreated={() => {}}
+      />,
+    );
+    const localCodeInput = container.querySelector('input[webkitdirectory]') as HTMLInputElement | null;
+    const tokenFiles = Array.from({ length: 25 }, (_, index) => {
+      const file = new File([`:root { --brand-${index}: #d86a4a; }`], `tokens-${index}.css`, {
+        type: 'text/css',
+      });
+      Object.defineProperty(file, 'webkitRelativePath', { value: `comfyui/src/tokens-${index}.css` });
+      return file;
+    });
+
+    fireEvent.click(localCodeInput!);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ds-source-upload-loading').textContent).toContain('Adding source material...');
+    }, { timeout: 1000 });
+
+    fireEvent.change(localCodeInput!, { target: { files: tokenFiles } });
+
+    await waitFor(() => expect(screen.getByText('25 local code files selected')).toBeTruthy(), { timeout: 2000 });
+    await waitFor(() => expect(screen.queryByTestId('ds-source-upload-loading')).toBeNull(), { timeout: 2500 });
   });
 
   it('shows a recoverable error when a dragged local code entry cannot be read', async () => {
@@ -1028,6 +1114,50 @@ describe('DesignSystemCreationFlow', () => {
       expect(screen.getByText(/Could not read one or more dropped files or folders/)).toBeTruthy();
     });
     expect(screen.queryByText(/local code files selected/)).toBeNull();
+  });
+
+  it('shows a global loading state while local source files are being read', async () => {
+    const { container } = render(
+      <DesignSystemCreationFlow
+        onBack={() => {}}
+        onCreated={() => {}}
+      />,
+    );
+    const dropZone = container.querySelector('input[webkitdirectory]')?.closest('.ds-drop-zone') as HTMLElement | null;
+    const tokenFiles = Array.from({ length: 25 }, (_, index) => (
+      new File([`:root { --brand-${index}: #d86a4a; }`], `tokens-${index}.css`, { type: 'text/css' })
+    ));
+    let resolveRead!: () => void;
+    const readReady = new Promise<void>((resolve) => {
+      resolveRead = resolve;
+    });
+
+    fireEvent.drop(dropZone!, {
+      dataTransfer: {
+        files: [],
+        items: [
+          ...tokenFiles.map((tokenFile) => ({
+            webkitGetAsEntry: () => ({
+              isFile: true,
+              isDirectory: false,
+              name: tokenFile.name,
+              file: (done: (file: File) => void) => {
+                void readReady.then(() => done(tokenFile));
+              },
+            }),
+          })),
+        ],
+      },
+    });
+
+    expect(screen.queryByTestId('ds-source-upload-loading')).toBeNull();
+    resolveRead();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('ds-source-upload-loading').textContent).toContain('Adding source material...');
+    });
+    await waitFor(() => expect(screen.getByText('25 local code files selected')).toBeTruthy());
+    await waitFor(() => expect(screen.queryByTestId('ds-source-upload-loading')).toBeNull());
   });
 
   it('recursively reads a dragged local code folder into the design-system project context', async () => {
@@ -1271,7 +1401,10 @@ describe('DesignSystemCreationFlow', () => {
       target: { value: 'Assets: product brand with custom logo and font' },
     });
     fireEvent.change(assetInput!, { target: { files: [logoFile, fontFile] } });
-    expect(screen.getByText('logo.svg, brand.woff2')).toBeTruthy();
+    expect(screen.getByText('Drag files here or browse')).toBeTruthy();
+    expect(screen.getByText('logo.svg')).toBeTruthy();
+    expect(screen.getByText('brand.woff2')).toBeTruthy();
+    expect(screen.queryByTestId('ds-source-upload-loading')).toBeNull();
 
     continueToGeneration();
     continueToGeneration();
@@ -1485,33 +1618,40 @@ describe('DesignSystemCreationFlow', () => {
     const config = {
       composio: { apiKeyConfigured: true, apiKeyTail: 'uQEg' },
     } as AppConfig;
+    const onConnectorsChanged = vi.fn();
+    window.addEventListener(CONNECTORS_CHANGED_EVENT, onConnectorsChanged);
 
-    render(
-      <DesignSystemCreationFlow
-        onBack={() => {}}
-        onCreated={() => {}}
-        config={config}
-      />,
-    );
+    try {
+      render(
+        <DesignSystemCreationFlow
+          onBack={() => {}}
+          onCreated={() => {}}
+          config={config}
+        />,
+      );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show access methods' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Connect via Composio' })).toBeTruthy());
-    expect((screen.getByPlaceholderText('https://github.com/owner/repo') as HTMLInputElement).disabled).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Show access methods' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Connect via Composio' })).toBeTruthy());
+      expect((screen.getByPlaceholderText('https://github.com/owner/repo') as HTMLInputElement).disabled).toBe(false);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Connect via Composio' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Connect via Composio' }));
 
-    await waitFor(() => expect(mocks.connectConnector).toHaveBeenCalledWith('github'));
-    await waitFor(() => expect(screen.getByText(/Connected as qiongyu1999/i)).toBeTruthy());
-    expect(screen.queryByRole('button', { name: 'Configure' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeTruthy();
-    const input = screen.getByPlaceholderText('https://github.com/owner/repo') as HTMLInputElement;
-    expect(input.disabled).toBe(false);
+      await waitFor(() => expect(mocks.connectConnector).toHaveBeenCalledWith('github'));
+      await waitFor(() => expect(screen.getByText(/Connected as qiongyu1999/i)).toBeTruthy());
+      await waitFor(() => expect(onConnectorsChanged).toHaveBeenCalledTimes(1));
+      expect(screen.queryByRole('button', { name: 'Configure' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Disconnect' })).toBeTruthy();
+      const input = screen.getByPlaceholderText('https://github.com/owner/repo') as HTMLInputElement;
+      expect(input.disabled).toBe(false);
 
-    fireEvent.change(input, { target: { value: 'https://github.com/nexu-io/open-design/' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+      fireEvent.change(input, { target: { value: 'https://github.com/nexu-io/open-design/' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
-    expect(screen.getByText('nexu-io/open-design')).toBeTruthy();
-    expect(input.value).toBe('');
+      expect(screen.getByText('nexu-io/open-design')).toBeTruthy();
+      expect(input.value).toBe('');
+    } finally {
+      window.removeEventListener(CONNECTORS_CHANGED_EVENT, onConnectorsChanged);
+    }
   });
 
   it('hides Composio connection ids in the connected GitHub label', async () => {

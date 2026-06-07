@@ -9,6 +9,7 @@ import {
   OPEN_DESIGN_SIDECAR_CONTRACT,
   SIDECAR_ENV,
   SIDECAR_MESSAGES,
+  SIDECAR_MODES,
   normalizeDesktopSidecarMessage,
   type DesktopClickInput,
   type DesktopEvalInput,
@@ -27,7 +28,7 @@ import {
   requestJsonIpc,
   resolveAppIpcPath,
   resolveLogFilePath,
-  resolveNamespaceRoot,
+  resolveRuntimeNamespaceRoot,
   type JsonIpcServerHandle,
   type SidecarRuntimeContext,
 } from "@open-design/sidecar";
@@ -46,7 +47,13 @@ import {
 // runtime. They are part of the security boundary for child-window
 // navigation (see `setWindowOpenHandler` in `runtime.ts`), so
 // pinning them is worth the small extra surface.
-export { isAllowedChildWindowUrl, isHttpUrl, resolveDesktopStatusUrl } from "./runtime.js";
+export {
+  createSplashWindow,
+  isAllowedChildWindowUrl,
+  isAllowedEmbeddedBrowserUrl,
+  isHttpUrl,
+  resolveDesktopStatusUrl,
+} from "./runtime.js";
 
 // Re-export the path-validation helpers for the same reason (#974).
 // shell.openPath is privileged main-process behaviour; pinning the
@@ -110,6 +117,16 @@ export type DesktopMainOptions = {
   discoverDaemonUrl?: () => Promise<string | null>;
   preloadPath?: string;
   onDesktopReady?: (controls: { show(): void }) => void;
+  /**
+   * Optional pre-created splash window. The packaged entry creates it before
+   * awaiting the daemon/web sidecars so the brand animation overlaps the cold
+   * boot; forwarded straight to the runtime, which owns closing it once the
+   * main window is revealed. Omitted by tools-dev (the runtime makes its own).
+   */
+  splashWindow?: BrowserWindow | null;
+  /** Creation time of `splashWindow` (from `createSplashWindow().startedAt`), so
+   * the runtime measures the minimum splash hold from when it actually appeared. */
+  splashStartedAt?: number;
   update?: {
     currentVersion?: string | null;
     downloadRoot?: string | null;
@@ -235,11 +252,31 @@ function installDesktopMenu(
       },
       {
         label: "Help",
+        role: "help",
         submenu: [
           {
-            label: "Open Design",
+            label: "Documentation",
             click() {
-              void shell.openExternal("https://github.com/nexu-io/open-design");
+              void shell.openExternal("https://github.com/nexu-io/open-design#readme");
+            },
+          },
+          { type: "separator" },
+          {
+            label: "Contact Us",
+            click() {
+              void shell.openExternal("https://x.com/nexudotio");
+            },
+          },
+          {
+            label: "Report Issue",
+            click() {
+              void shell.openExternal("https://github.com/nexu-io/open-design/issues/new");
+            },
+          },
+          {
+            label: "Join Discord",
+            click() {
+              void shell.openExternal("https://discord.gg/mHAjSMV6gz");
             },
           },
           { type: "separator" },
@@ -363,10 +400,17 @@ export async function runDesktopMain(
     },
     { openPath: (path) => shell.openPath(path) },
   );
-  const namespaceRoot = resolveNamespaceRoot({
-    base: runtime.base,
+  // Resolve the namespace root the same way the diagnostics export does
+  // (apps/desktop/src/main/diagnostics.ts). In packaged builds `runtime.base`
+  // is `<namespaceRoot>/runtime`, so re-appending the namespace via
+  // `resolveNamespaceRoot` would write renderer.log to a phantom
+  // `<namespaceRoot>/runtime/<namespace>/logs/desktop` dir that the export
+  // reader never looks in. Keeping both sides on `resolveRuntimeNamespaceRoot`
+  // co-locates renderer.log with the desktop log dir AND keeps it captured.
+  const namespaceRoot = resolveRuntimeNamespaceRoot({
     contract: OPEN_DESIGN_SIDECAR_CONTRACT,
-    namespace: runtime.namespace,
+    runtime,
+    runtimeMode: SIDECAR_MODES.RUNTIME,
   });
   const desktopLogPath = resolveLogFilePath({
     app: APP_KEYS.DESKTOP,
@@ -414,6 +458,8 @@ export async function runDesktopMain(
     registerDesktopAuthWithDaemon: () => registerDesktopAuthWithDaemon(runtime, desktopAuthSecret),
     rendererLogPath,
     requestQuit: shutdownAndExit,
+    splashWindow: options.splashWindow,
+    splashStartedAt: options.splashStartedAt,
     updater,
   });
   options.onDesktopReady?.({ show: () => desktop?.show() });

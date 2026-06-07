@@ -21,6 +21,7 @@ const fetchDesignSystem = vi.fn();
 const getTemplate = vi.fn();
 const fetchChatRunStatus = vi.fn();
 const listActiveChatRuns = vi.fn();
+const listProjectRuns = vi.fn();
 const reattachDaemonRun = vi.fn();
 const streamViaDaemon = vi.fn();
 const saveMessage = vi.fn();
@@ -47,6 +48,7 @@ vi.mock('../../src/providers/anthropic', () => ({
 vi.mock('../../src/providers/daemon', () => ({
   fetchChatRunStatus: (...args: unknown[]) => fetchChatRunStatus(...args),
   listActiveChatRuns: (...args: unknown[]) => listActiveChatRuns(...args),
+  listProjectRuns: (...args: unknown[]) => listProjectRuns(...args),
   reattachDaemonRun: (...args: unknown[]) => reattachDaemonRun(...args),
   streamViaDaemon: (...args: unknown[]) => streamViaDaemon(...args),
 }));
@@ -151,6 +153,28 @@ describe('computeProducedFiles', () => {
     expect(produced?.map((f) => f.name)).toEqual(['new.pptx']);
   });
 
+  it('excludes user sketch files from turn output attribution', () => {
+    const before = ['existing.html'];
+    const next = [
+      { name: 'existing.html', path: '/p/existing.html', size: 1, mtime: 1, kind: 'html', mime: 'text/html' },
+      { name: 'board.sketch.json', path: '/p/board.sketch.json', size: 2, mtime: 2, kind: 'sketch', mime: 'application/json' },
+      { name: 'new.pptx', path: '/p/new.pptx', size: 3, mtime: 3, kind: 'pdf', mime: 'application/pdf' },
+    ];
+    const produced = computeProducedFiles(before, next as never);
+    expect(produced?.map((f) => f.name)).toEqual(['new.pptx']);
+  });
+
+  it('keeps generated svg files even when they are classified as sketches', () => {
+    const before = ['existing.html'];
+    const next = [
+      { name: 'existing.html', path: '/p/existing.html', size: 1, mtime: 1, kind: 'html', mime: 'text/html' },
+      { name: 'diagram.svg', path: '/p/diagram.svg', size: 2, mtime: 2, kind: 'sketch', mime: 'image/svg+xml' },
+      { name: 'board.sketch.json', path: '/p/board.sketch.json', size: 3, mtime: 3, kind: 'sketch', mime: 'application/json' },
+    ];
+    const produced = computeProducedFiles(before, next as never);
+    expect(produced?.map((f) => f.name)).toEqual(['diagram.svg']);
+  });
+
   it('returns undefined when no baseline is provided', () => {
     expect(computeProducedFiles(undefined, [] as never)).toBeUndefined();
   });
@@ -181,6 +205,42 @@ describe('ProjectView daemon reattach restore', () => {
     cleanup();
     vi.clearAllMocks();
     window.sessionStorage.clear();
+  });
+
+  it('does not replay a terminal succeeded row just because produced files are missing', async () => {
+    const startedAt = Date.now();
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([
+      {
+        id: 'msg-done',
+        role: 'assistant',
+        content: 'All done!',
+        createdAt: startedAt,
+        startedAt,
+        runStatus: 'succeeded',
+      } satisfies ChatMessage,
+    ]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+
+    renderProjectView();
+
+    await waitFor(() => expect(listMessages).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchProjectFiles).toHaveBeenCalled());
+    expect(listActiveChatRuns).not.toHaveBeenCalled();
+    expect(listProjectRuns).not.toHaveBeenCalled();
+    expect(fetchChatRunStatus).not.toHaveBeenCalled();
+    expect(reattachDaemonRun).not.toHaveBeenCalled();
+    expect(
+      saveMessage.mock.calls
+        .map((call) => call[2] as ChatMessage)
+        .some((m) => m?.id === 'msg-done' && m.runStatus === 'failed'),
+    ).toBe(false);
   });
 
   it('populates producedFiles on the persisted message after reattach completes', async () => {
@@ -360,6 +420,67 @@ describe('ProjectView daemon reattach restore', () => {
         .filter((m) => m?.id === 'msg-fail' && (m.runStatus === 'failed' || m.runStatus === 'succeeded'))
         .at(-1);
       expect(finalSave?.runStatus).toBe('failed');
+    });
+  });
+
+  it('renders AMR recharge guidance when a reattached run reports insufficient balance', async () => {
+    const startedAt = Date.now();
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([
+      {
+        id: 'msg-amr-balance',
+        role: 'assistant',
+        content: '',
+        createdAt: startedAt,
+        startedAt,
+        runId: 'run-amr-balance',
+        runStatus: 'running',
+        preTurnFileNames: [],
+      } satisfies ChatMessage,
+    ]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    fetchChatRunStatus.mockResolvedValue({
+      id: 'run-amr-balance',
+      status: 'running',
+      createdAt: startedAt,
+      updatedAt: startedAt,
+      exitCode: null,
+      signal: null,
+    });
+    listActiveChatRuns.mockResolvedValue([]);
+
+    reattachDaemonRun.mockImplementation(async (options: any) => {
+      const error = new Error(
+        'AMR Cloud reported insufficient balance for this model. Recharge your AMR wallet at https://open-design.ai/amr/wallet, then retry this run.',
+      ) as Error & { code: string; details: unknown };
+      error.code = 'AMR_INSUFFICIENT_BALANCE';
+      error.details = {
+        kind: 'amr_account',
+        action: 'recharge',
+        actionUrl: 'https://open-design.ai/amr/wallet',
+      };
+      options.handlers.onError(error);
+    });
+
+    renderProjectView();
+
+    await waitFor(() => expect(reattachDaemonRun).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const finalSave = saveMessage.mock.calls
+        .map((call) => call[2] as ChatMessage)
+        .filter((m) => m?.id === 'msg-amr-balance' && m.runStatus === 'failed')
+        .at(-1);
+      expect(finalSave?.events?.some(
+        (event) => event.kind === 'status'
+          && event.label === 'error'
+          && (event as { code?: string }).code === 'AMR_INSUFFICIENT_BALANCE',
+      )).toBe(true);
     });
   });
 

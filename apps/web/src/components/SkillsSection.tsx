@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
+import { Button } from '@open-design/components';
 import { useI18n, useT } from '../i18n';
 import {
   localizeSkillDescription,
@@ -34,6 +35,15 @@ import {
 interface Props {
   cfg: AppConfig;
   setCfg: Dispatch<SetStateAction<AppConfig>>;
+  onSkillsRefresh?: () => Promise<void> | void;
+  /**
+   * Fires after every successful skill registry mutation so the App
+   * shell can refresh derived state and evict any preview iframe whose
+   * project depends on the affected skill — body-only edits do not move
+   * any SkillSummary field, so ProjectView's signature-based eviction
+   * cannot see them on its own.
+   */
+  onSkillsChanged?: (affectedSkillId?: string) => void;
 }
 
 type SourceFilter = 'all' | 'user' | 'built-in';
@@ -68,8 +78,8 @@ function parseTriggers(raw: string): string[] {
     .filter(Boolean);
 }
 
-export function SkillsSection({ cfg, setCfg }: Props) {
-  const t = useT();
+export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }: Props) {
+  const { locale, t } = useI18n();
 
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [search, setSearch] = useState('');
@@ -160,12 +170,12 @@ export function SkillsSection({ cfg, setCfg }: Props) {
       if (categoryFilter !== 'all' && s.category !== categoryFilter)
         return false;
       if (!q) return true;
-      const hay = `${s.name}\n${s.description}\n${(s.triggers ?? []).join(
+      const hay = `${s.name}\n${localizeSkillName(locale, s)}\n${s.description}\n${localizeSkillDescription(locale, s)}\n${(s.triggers ?? []).join(
         ' ',
       )}\n${s.category ?? ''}`;
       return hay.toLowerCase().includes(q);
     });
-  }, [skills, modeFilter, sourceFilter, categoryFilter, search]);
+  }, [skills, modeFilter, sourceFilter, categoryFilter, search, locale]);
 
   const ensureBody = useCallback(
     async (id: string) => {
@@ -292,6 +302,7 @@ export function SkillsSection({ cfg, setCfg }: Props) {
     }
     const updated = result.skill;
     await refresh();
+    await onSkillsRefresh?.();
     setBodyById((cur) => ({ ...cur, [updated.id]: body }));
     // Drop the cached file tree for this id so the next expand
     // re-walks the on-disk folder; SKILL.md may have been the only
@@ -305,7 +316,8 @@ export function SkillsSection({ cfg, setCfg }: Props) {
     setEditingId(null);
     setCreating(false);
     setDraft(EMPTY_DRAFT);
-  }, [draft, draftSaving, editingId, refresh]);
+    onSkillsChanged?.(updated.id);
+  }, [draft, draftSaving, editingId, onSkillsChanged, onSkillsRefresh, refresh]);
 
   const armDelete = useCallback((id: string) => {
     setConfirmDeleteId(id);
@@ -324,6 +336,7 @@ export function SkillsSection({ cfg, setCfg }: Props) {
       }
       setConfirmDeleteId(null);
       await refresh();
+      await onSkillsRefresh?.();
       setBodyById((cur) => {
         const next = { ...cur };
         delete next[id];
@@ -346,8 +359,9 @@ export function SkillsSection({ cfg, setCfg }: Props) {
         setEditingId(null);
         setDraft(EMPTY_DRAFT);
       }
+      onSkillsChanged?.(id);
     },
-    [editingId, expandedId, refresh, setCfg],
+    [editingId, expandedId, onSkillsChanged, onSkillsRefresh, refresh, setCfg],
   );
 
   const toggleEnabled = useCallback(
@@ -634,25 +648,23 @@ function SkillRow({
             </span>
           ) : (
             <>
-              <button
-                type="button"
-                className="icon-btn"
+              <Button
+                size="icon"
                 onClick={onStartEdit}
                 title={t('settings.skillsEdit')}
                 data-testid="skills-edit"
               >
                 <Icon name="edit" size={13} />
-              </button>
+              </Button>
               {canDelete ? (
-                <button
-                  type="button"
-                  className="icon-btn"
+                <Button
+                  size="icon"
                   onClick={onArmDelete}
                   title={t('settings.skillsDelete')}
                   data-testid="skills-delete"
                 >
                   <Icon name="close" size={13} />
-                </button>
+                </Button>
               ) : null}
             </>
           )}
